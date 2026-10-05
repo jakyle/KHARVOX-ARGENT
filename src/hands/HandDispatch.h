@@ -15,6 +15,7 @@ struct KharvoxVulkanDispatch {
     PFN_vkCmdCopyImage cmdCopyImage{};
     PFN_vkCmdCopyBufferToImage cmdCopyBufferToImage{};
     PFN_vkCmdClearColorImage cmdClearColorImage{};
+    PFN_vkCmdClearDepthStencilImage cmdClearDepthStencilImage{};
     PFN_vkCreateImage createImage{};
     PFN_vkDestroyImage destroyImage{};
     PFN_vkGetImageMemoryRequirements getImageMemoryRequirements{};

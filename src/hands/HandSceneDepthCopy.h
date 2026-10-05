@@ -42,4 +42,23 @@ void copyHandSceneDepth(const Dispatch& vk,VkCommandBuffer cb,VkImage source,
     }
     vk.cmdPipelineBarrier(cb,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,0,0,nullptr,0,nullptr,2,b.data());
 }
+
+template<class Dispatch>
+void clearHandSceneDepth(const Dispatch& vk,VkCommandBuffer cb,VkImage destination,
+    VkImageAspectFlags aspects,bool initialized,bool reverseDepth){
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+    b.subresourceRange={aspects,0,1,0,1};b.image=destination;
+    b.oldLayout=initialized?VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcAccessMask=initialized?VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:0;
+    b.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+    vk.cmdPipelineBarrier(cb,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&b);
+    const VkClearDepthStencilValue farDepth{reverseDepth?0.f:1.f,0};
+    vk.cmdClearDepthStencilImage(cb,destination,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&farDepth,1,&b.subresourceRange);
+    b.oldLayout=b.newLayout;b.newLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    b.srcAccessMask=b.dstAccessMask;
+    b.dstAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    vk.cmdPipelineBarrier(cb,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,0,0,nullptr,0,nullptr,1,&b);
+}
 }

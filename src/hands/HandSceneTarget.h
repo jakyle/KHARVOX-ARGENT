@@ -25,6 +25,7 @@ struct HandSceneTarget {
     // Native mirrors survive across frames. Hand self-depth must never be
     // written back into their engine-owned depth/stencil contents.
     bool copyDepthForHands{};
+    bool sceneDepthUnreadable{}; // driver cannot blit this depth format; draw hands without scene occlusion
     uint32_t depthArrayLayer{};
 };
 
