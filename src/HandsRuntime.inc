@@ -23,6 +23,7 @@ void prepareHands(Device& d,bool quad){
     vk.cmdCopyImage=d.proc<PFN_vkCmdCopyImage>("vkCmdCopyImage");
     vk.cmdCopyBufferToImage=d.proc<PFN_vkCmdCopyBufferToImage>("vkCmdCopyBufferToImage");
     vk.cmdClearColorImage=d.proc<PFN_vkCmdClearColorImage>("vkCmdClearColorImage");
+    vk.cmdClearDepthStencilImage=d.proc<PFN_vkCmdClearDepthStencilImage>("vkCmdClearDepthStencilImage");
     vk.createImage=d.proc<PFN_vkCreateImage>("vkCreateImage");
     vk.destroyImage=d.proc<PFN_vkDestroyImage>("vkDestroyImage");
     vk.getImageMemoryRequirements=d.proc<PFN_vkGetImageMemoryRequirements>("vkGetImageMemoryRequirements");

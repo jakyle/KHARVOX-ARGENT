@@ -921,8 +921,12 @@ bool HandRenderer::recordSceneIntegrated(VkCommandBuffer commandBuffer,
         return false;
     impl_->sceneFramebuffers.push_back(framebuffer);
     if(privateDepth){
-        copyHandSceneDepth(impl_->vk,commandBuffer,target.depthImage,privateDepth->target.image,
-            target.extent,handSceneDepthAspect(target.depthFormat),privateDepth->initialized,target.depthArrayLayer,target.depthExtent,target.depthOffset);
+        if(target.sceneDepthUnreadable)
+            clearHandSceneDepth(impl_->vk,commandBuffer,privateDepth->target.image,
+                handSceneDepthAspect(target.depthFormat),privateDepth->initialized,target.reverseDepth);
+        else
+            copyHandSceneDepth(impl_->vk,commandBuffer,target.depthImage,privateDepth->target.image,
+                target.extent,handSceneDepthAspect(target.depthFormat),privateDepth->initialized,target.depthArrayLayer,target.depthExtent,target.depthOffset);
         privateDepth->initialized=true;
     }
     VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -945,7 +949,12 @@ bool HandRenderer::recordSceneDepth(VkCommandBuffer cb,uint32_t eye,uint32_t ind
         VkFormatProperties properties{};
         impl_->vk.getPhysicalDeviceFormatProperties(impl_->physical,target.depthFormat,&properties);
         const auto required=VK_FORMAT_FEATURE_BLIT_SRC_BIT|VK_FORMAT_FEATURE_BLIT_DST_BIT;
-        if((properties.optimalTilingFeatures&required)!=required)return false;
+        if((properties.optimalTilingFeatures&required)!=required){
+            if(!impl_->vk.cmdClearDepthStencilImage)return false;
+            target.sceneDepthUnreadable=true;
+            static bool reported{};
+            if(!reported){reported=true;impl_->say("Scene depth format "+std::to_string(target.depthFormat)+" cannot be blitted to the eye resolution on this GPU; drawing hands without scene occlusion");}
+        }
     }
     target.colorView=impl_->eyeViews[eye][index];target.colorFormat=impl_->format;
     target.copyDepthForHands=true;target.depthArrayLayer=eye;
