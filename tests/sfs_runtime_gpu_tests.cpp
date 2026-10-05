@@ -76,7 +76,7 @@ int main(int argc,char** argv){try{
 #else
  argent::sfs::SourceRing ring;check(ring.initialize(device,queue,vkGetDeviceProcAddr,memory,nullptr,nullptr),"Ring init failed");
 #endif
- VkSwapchainCreateInfoKHR chainInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};chainInfo.minImageCount=2;chainInfo.imageFormat=VK_FORMAT_R8G8B8A8_UNORM;chainInfo.imageExtent={4,4};chainInfo.imageArrayLayers=2;chainInfo.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+ VkSwapchainCreateInfoKHR chainInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};chainInfo.minImageCount=2;chainInfo.imageFormat=VK_FORMAT_R8G8B8A8_UNORM;chainInfo.imageExtent={4,4};chainInfo.imageArrayLayers=kharvox::sfs::kViews;chainInfo.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 #ifdef KHARVOX_SFS_TEST_INDIRECT
  chainInfo.imageUsage|=VK_IMAGE_USAGE_STORAGE_BIT;
 #endif

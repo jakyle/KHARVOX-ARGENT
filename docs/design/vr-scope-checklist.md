@@ -5,14 +5,14 @@ States: `[ ]` → `[coded]` (built, unit tests green) → `[verified]` (the user
 The spec is the contract: `vr-scope-spec.md`. Done means every line is `[verified]`, or carries a user-approved note.
 
 ## Phase 1: three-view SFS (§3.1)
-- [ ] §2.1 `kViews` / `kScopeView` constants introduced; no stray literal-2 view counts in `src/sfs`.
-- [ ] §2.2 `EyeUniforms` / `FrameUniforms` resized to 3 views; std140 block and `static_assert` updated.
-- [ ] §3.1.1 Images use 3 layers; views use `layerCount` 3; render-pass mask is 7, correlation mask stays 3.
-- [ ] §3.1.1 Dispatch depth, query slots, timestamps, `SourceRing`, and water capture all generalized.
-- [ ] §3.1.2 View 2 = left-eye projection.
-- [ ] §3.1.2 `ARGENT_SCOPE_DEBUG=1` mirrors layer 2 to the desktop.
-- [ ] §3.1.3 `maxViews>=3` check, with a fallback to 2 views (scope off) and a log line.
-- [ ] §3.1.4 Unit tests added and passing.
+- [coded] §2.1 `kViews` / `kScopeView` constants introduced; no stray literal-2 view counts in `src/sfs`.
+- [coded] §2.2 `EyeUniforms` / `FrameUniforms` resized to 3 views; std140 block and `static_assert` updated.
+- [coded] §3.1.1 Images use 3 layers; views use `layerCount` 3; render-pass mask is 7, correlation mask stays 3.
+- [coded] §3.1.1 Dispatch depth, query slots, timestamps, `SourceRing`, and water capture all generalized.
+- [coded] §3.1.2 View 2 = left-eye projection.
+- [coded] §3.1.2 `ARGENT_SCOPE_DEBUG=1` mirrors layer 2 to the desktop.
+- [coded] §3.1.3 `maxViews>=3` check, with a fallback to 2 views (scope off) and a log line.
+- [coded] §3.1.4 Unit tests added and passing (`sfs_view_count`; 6 capture-fixture tests need the absent `captures/` dir, `eternal_build_profile` + `sfs_portable_ui` fail on base too).
 - [ ] §3.1.4 Headset: eyes unchanged.
 - [ ] §3.1.4 Headset: debug mirror shows layer 2.
 - [ ] §3.1.4 Frame time recorded:

@@ -23,7 +23,8 @@ using Create=Result(__fastcall*)(VkCommandBuffer,uint32_t,void*,void**);
 using Release=Result(__fastcall*)(void*);
 using Evaluate=Result(__fastcall*)(VkCommandBuffer,void*,void*,const Parameters*);
 Create createOriginal{};Release releaseOriginal{};Evaluate evaluateOriginal{};
-struct Pair {void* right{};uint64_t serial{},tick{},samples{},windowSamples{},cpuNs{},maxNs{};bool quad{},seen{},stereoQuad{};};
+// histories[0] is the engine's own feature (the left eye); the others belong to the right eye and, with three views, the scope.
+struct Pair {std::array<void*,sfs::kViews> histories{};uint32_t views{};uint64_t serial{},tick{},samples{},windowSamples{},cpuNs{},maxNs{};bool quad{},seen{},stereoQuad{};};
 std::mutex mutex;
 std::unordered_map<void*,Pair> pairs;
 bool installed{};
@@ -37,14 +38,21 @@ void fallback(const char* reason){
 Result __fastcall create(VkCommandBuffer command,uint32_t feature,void* params,void** output){
     const auto left=createOriginal(command,feature,params,output);
     if(feature!=1||left!=success||!output||!*output)return left;
-    void* right{};const auto result=createOriginal(command,feature,params,&right);
-    if(result!=success||!right||right==*output){fallback("independent feature creation failed");return left;}
-    {std::lock_guard<std::mutex> lock(mutex);pairs.emplace(*output,Pair{right});}
-    log("DLSS_STEREO created independent eye histories");return left;
+    Pair pair;pair.views=sfs::viewCount(command);pair.histories[0]=*output;
+    for(uint32_t view=1;view<pair.views;++view){
+        void* history{};const auto result=createOriginal(command,feature,params,&history);
+        if(result!=success||!history||history==*output){
+            for(uint32_t created=1;created<view;++created)releaseOriginal(pair.histories[created]);
+            fallback("independent feature creation failed");return left;
+        }
+        pair.histories[view]=history;
+    }
+    {std::lock_guard<std::mutex> lock(mutex);pairs.emplace(*output,pair);}
+    log("DLSS_STEREO created independent view histories views="+std::to_string(pair.views));return left;
 }
 Result __fastcall release(void* handle){
-    void* right{};{std::lock_guard<std::mutex> lock(mutex);auto found=pairs.find(handle);if(found!=pairs.end()){right=found->second.right;pairs.erase(found);}}
-    if(right){auto result=releaseOriginal(right);log("DLSS_STEREO released right history result="+std::to_string(result));}
+    Pair pair;bool found{};{std::lock_guard<std::mutex> lock(mutex);auto it=pairs.find(handle);if(it!=pairs.end()){pair=it->second;found=true;pairs.erase(it);}}
+    if(found)for(uint32_t view=1;view<pair.views;++view){auto result=releaseOriginal(pair.histories[view]);log("DLSS_STEREO released view="+std::to_string(view)+" history result="+std::to_string(result));}
     return releaseOriginal(handle);
 }
 Result __fastcall evaluate(VkCommandBuffer command,void* handle,void* nativeParams,const Parameters* input){
@@ -54,21 +62,22 @@ Result __fastcall evaluate(VkCommandBuffer command,void* handle,void* nativePara
     // feature evaluations, not game draws or command recording in general.
     std::lock_guard<std::mutex> lock(mutex);auto found=pairs.find(handle);
     if(found==pairs.end()||!input){fallback("missing stereo history");return evaluateOriginal(command,handle,nativeParams,input);}
-    auto& pair=found->second;std::array<EyeParameters,2> eyes;sfs::FramePose pose;
+    auto& pair=found->second;std::array<EyeParameters,sfs::kViews> eyes;sfs::FramePose pose;
     const bool valid=prepareEyes(*input,eyes,[&](const auto& resources,auto& out){return sfs::dlssEyeResources(command,resources,out,pose);},false);
     if(!valid){fallback("unsupported eye resource contract");return evaluateOriginal(command,handle,nativeParams,input);}
     const auto tick=GetTickCount64();
     const bool reset=!pair.seen||pair.quad!=pose.quadView||pair.stereoQuad!=pose.stereoQuad||pose.recenterRequested||tick-pair.tick>250||pose.serial<pair.serial||pose.serial>pair.serial+1;
     if(reset)for(auto& eye:eyes)eye.params.set<int>(0x38,1);
-    const auto left=evaluateOriginal(command,handle,nativeParams,&eyes[0].params);
-    const auto right=left==success?evaluateOriginal(command,pair.right,nativeParams,&eyes[1].params):left;
-    if(left!=success||right!=success){fallback("native evaluation failed");return left!=success?left:right;}
+    for(uint32_t view=0;view<pair.views;++view){
+        const auto result=evaluateOriginal(command,pair.histories[view],nativeParams,&eyes[view].params);
+        if(result!=success){fallback("native evaluation failed");return result;}
+    }
     pair.seen=true;pair.serial=pose.serial;pair.quad=pose.quadView;pair.stereoQuad=pose.stereoQuad;pair.tick=tick;
-    if(!timing){if(++pair.samples==1)log("DLSS_STEREO evaluated eyes=2 timing=off");return success;}
+    if(!timing){if(++pair.samples==1)log("DLSS_STEREO evaluated views="+std::to_string(pair.views)+" timing=off");return success;}
     const auto ns=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count());
     pair.cpuNs+=ns;pair.maxNs=std::max(pair.maxNs,ns);++pair.samples;++pair.windowSamples;
     if(pair.samples==1||pair.samples%240==0){
-        log("DLSS_STEREO evaluated eyes=2 serial="+std::to_string(pose.serial)+" reset="+std::to_string(reset)+
+        log("DLSS_STEREO evaluated views="+std::to_string(pair.views)+" serial="+std::to_string(pose.serial)+" reset="+std::to_string(reset)+
             " input="+std::to_string(input->get<uint32_t>(0x30))+"x"+std::to_string(input->get<uint32_t>(0x34))+
             " cpuMeanMs="+std::to_string(double(pair.cpuNs)/pair.windowSamples/1e6)+" cpuMaxMs="+std::to_string(double(pair.maxNs)/1e6));
         pair.cpuNs=pair.maxNs=pair.windowSamples=0;

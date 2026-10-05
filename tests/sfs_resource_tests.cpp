@@ -21,12 +21,12 @@ int main(){try{
     info.usage=VK_IMAGE_USAGE_SAMPLED_BIT;
     check(!stereoImage(info));
     info.usage|=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;check(stereoImage(info));
-    auto copy=imageInfo(info);check(copy.arrayLayers==2&&info.arrayLayers==1);
+    auto copy=imageInfo(info);check(copy.arrayLayers==kViews&&info.arrayLayers==1);
     info.imageType=VK_IMAGE_TYPE_3D;check(!stereoImage(info));
     info.imageType=VK_IMAGE_TYPE_2D;info.arrayLayers=6;check(!stereoImage(info));
     info.arrayLayers=1;Images images;VkImage image{};
     check(images.create({},info,nullptr,&image,createImage)==VK_SUCCESS);
-    check(received.arrayLayers==2);
+    check(received.arrayLayers==kViews);
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image=image;view.viewType=VK_IMAGE_VIEW_TYPE_2D;view.subresourceRange.layerCount=1;
     check(images.viewInfo(view).viewType==VK_IMAGE_VIEW_TYPE_2D_ARRAY);
@@ -39,12 +39,12 @@ int main(){try{
     check(images.create({},info,nullptr,&image,createImage)==VK_ERROR_FORMAT_NOT_SUPPORTED);
     // Parallel readers alongside registry churn; stable images must retain
     // their classification while unrelated handles are inserted and removed.
-    images.track(image,2);
+    images.track(image,kViews);
     std::atomic<bool> start{false},valid{true};std::vector<std::thread> readers;
     for(unsigned n=0;n<4;++n)readers.emplace_back([&]{
         while(!start.load())std::this_thread::yield();
         for(unsigned i=0;i<10000;++i){
-            if(images.layers(image)!=2||images.viewInfo(view).viewType!=VK_IMAGE_VIEW_TYPE_2D_ARRAY)valid=false;
+            if(images.layers(image)!=kViews||images.viewInfo(view).viewType!=VK_IMAGE_VIEW_TYPE_2D_ARRAY)valid=false;
         }
     });
     start=true;
@@ -56,14 +56,15 @@ int main(){try{
     rp.subpassCount=2;rp.pSubpasses=subpasses;
     RenderPassPlan plan(rp,true);check(plan.valid());
     auto mv=static_cast<const VkRenderPassMultiviewCreateInfo*>(plan.info().pNext);
-    check(mv->subpassCount==2&&mv->pViewMasks[0]==3&&mv->pViewMasks[1]==3);
+    check(mv->subpassCount==2&&mv->pViewMasks[0]==7&&mv->pViewMasks[1]==7);
     check(rp.pNext==nullptr&&mv->pCorrelationMasks[0]==3);
     RenderPassPlan duplicate(plan.info(),true);check(!duplicate.valid());
     RenderPassPlan mono(rp,false);check(mono.info().pNext==nullptr);
-    uint32_t depth=99;check(dispatchDepth(12,true,64,depth)&&depth==24);
+    uint32_t depth=99;check(dispatchDepth(12,true,64,depth)&&depth==36);
     check(dispatchDepth(12,false,64,depth)&&depth==12);
     check(!dispatchDepth(UINT32_MAX,true,UINT32_MAX,depth)&&depth==12);
     check(!dispatchDepth(40,true,64,depth)&&depth==12);
+    check(!dispatchDepth(22,true,64,depth)&&depth==12);
     std::cout<<"SFS allocation, view, render-pass and dispatch contracts passed\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

@@ -29,3 +29,18 @@ Vulkan-dependent sources also need:
 
 ### 2026-10-05 — Comment hook
 - A user hook blocks multi-line `//` comment blocks in code. Keep code comments to single lines.
+
+### 2026-10-05 — CRLF sources defeat PowerShell string Replace
+- **What went wrong:** multi-line `.Replace()` edits silently missed in CRLF files.
+- **Correction:** use the Edit tool, or normalize to LF, replace, and restore CRLF.
+- **Durable lesson:** after any scripted replace, print a MISSING line for each pattern that didn't match.
+
+### 2026-10-05 — Multiview occlusion can't be split per view
+- **What went wrong:** summed only the eye slots so the scope wouldn't change occlusion counts. The GPU test then got 24, not 16.
+- **Correction:** sum every view slot. Vulkan may distribute the count across view slots arbitrarily.
+- **Durable lesson:** an extra multiview view always inflates game occlusion counts.
+
+### 2026-10-05 — Pre-existing test failures
+- `captures/` isn't in the repo, so 6 capture-fixture tests fail (eternal_volumes, light_grid, vk3d, amd_light_grid, amd_world, world_variants).
+- `eternal_build_profile` and `sfs_portable_ui` also fail on base `d8ceb1b`.
+- Direct-compile GPU tests (bindless, sampling, water_robustness) use 2-layer fixtures, so they pin `options.views=kEyeViews`.

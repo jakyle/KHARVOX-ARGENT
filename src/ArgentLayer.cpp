@@ -210,6 +210,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice p,const VkDeviceC
         return r;
     }
     const bool sfsRequested=i.game&&argent::sfs::nativeProbeEnabled();
+    uint32_t sfsViews=kharvox::sfs::kEyeViews;
     if(sfsRequested){
         auto queryFeatures=reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(i.gipa(i.handle,"vkGetPhysicalDeviceFeatures2"));
         if(!queryFeatures)queryFeatures=reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(i.gipa(i.handle,"vkGetPhysicalDeviceFeatures2KHR"));
@@ -230,6 +231,10 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice p,const VkDeviceC
             argent::log(std::string("SFS_INIT_REFUSED ")+failure);return VK_ERROR_FEATURE_NOT_PRESENT;
         }
         if(gpu.vendorID==0x1002)argent::log("SFS_GPU AMD capability checks passed; ARGENT headset rendering still requires hardware validation");
+        sfsViews=kharvox::sfs::supportedViews(viewLimits.maxMultiviewViewCount,gpu.limits.maxImageArrayLayers);
+        char forcedViews[8]{};
+        if(GetEnvironmentVariableA("ARGENT_SFS_VIEWS",forcedViews,sizeof(forcedViews))==1&&forcedViews[0]=='2'){sfsViews=kharvox::sfs::kEyeViews;argent::log("SFS_SCOPE_DISABLED ARGENT_SFS_VIEWS=2 (dev timing baseline)");}
+        if(sfsViews<kharvox::sfs::kViews)argent::log("SFS_SCOPE_UNAVAILABLE maxViews="+std::to_string(viewLimits.maxMultiviewViewCount)+" maxLayers="+std::to_string(gpu.limits.maxImageArrayLayers)+"; falling back to two views, scope disabled");
     }
     auto required=i.game&&(!sfsRequested||argent::sfs::vrEnabled())?argent::xrExtensions(true):std::vector<std::string>{};
     bool gpuCheckpoints=false,gpuFaultExtension=false,gpuFault=false,addFaultFeatures=false;char diagnostics[8]{};
@@ -353,6 +358,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice p,const VkDeviceC
             VkPhysicalDeviceMemoryProperties memory{};
             reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(i.gipa(i.handle,"vkGetPhysicalDeviceMemoryProperties"))(p,&memory);
             auto config=argent::sfs::vrEnabled()?argent::sfs::eternalProfile():argent::sfs::Configuration{};
+            config.views=sfsViews;
             if(!argent::sfs::initialize(*out,p,gdpa,memory,config)){
                 reinterpret_cast<PFN_vkDestroyDevice>(gdpa(*out,"vkDestroyDevice"))(*out,a);*out=VK_NULL_HANDLE;return VK_ERROR_INITIALIZATION_FAILED;
             }
@@ -421,7 +427,7 @@ VkResult prepareStereo(const std::shared_ptr<State>& s,VkSwapchainKHR sc,uint32_
  const bool changedQuad=nextQuad!=s->menuQuad;
  if(changedQuad){s->menuQuad=nextQuad;if(!nextQuad)s->calibrated=false;argent::camera::stop();}
  if(mode!=s->presentationMode||changedQuad){s->presentationMode=mode;argent::log(std::string("SFS_MODE automatic=")+std::to_string(options.automatic)+" context="+argent::presentation::name(mode)+" quad="+std::to_string(s->menuQuad));}
- argent::sfs::EyeUniforms uniforms{{argent::sfs::identity(),argent::sfs::identity()},{}};
+ auto uniforms=argent::sfs::identityUniforms();
  argent::sfs::Matrix cinematicProjection{};
  const bool wantCinema=argent::presentation::stereoCinematic(mode,options,s->menuQuad)&&s->camera.projection(cinematicProjection,100);
  if(!argent::beginStereoFrame(*s,source,pose,head,s->menuQuad,wantCinema?&cinematicProjection:nullptr,&uniforms)){argent::camera::stop();return VK_SUCCESS;}
@@ -469,6 +475,7 @@ VkResult prepareStereo(const std::shared_ptr<State>& s,VkSwapchainKHR sc,uint32_
   }
   uniforms.diagnostics[3]=!s->menuQuad?float(screenProbe):0.f;
   if(screenProbe==2)uniforms.diagnostics[0]=0.f;
+  argent::sfs::mirrorScopeView(uniforms);
   s->framePose=pose;argent::sfs::prepare(s->device,pose,uniforms);
  VkResult result;
  {static argent::FrameTiming::Totals t;argent::FrameTiming timing("uniformRetirementAndUpload",t);
@@ -505,7 +512,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice d,const VkSwapchain
        reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(s->gipa(s->instance,"vkGetPhysicalDeviceMemoryProperties"))(s->physical,&mem);
        if(!argent::sfs::configureSourceRing(d,s->gdpa,mem,s->graphicsQueue,nullptr,nullptr))return VK_ERROR_INITIALIZATION_FAILED;}
       if(ci->oldSwapchain){auto old=s->mirrors.find(ci->oldSwapchain);if(old!=s->mirrors.end()){old->second->destroy(*s);s->mirrors.erase(old);}}
-      modified.imageArrayLayers=2;
+      modified.imageArrayLayers=argent::sfs::viewCount(d);
       if(s->queueFamilies.size()>1){modified.imageSharingMode=VK_SHARING_MODE_CONCURRENT;modified.queueFamilyIndexCount=uint32_t(s->queueFamilies.size());modified.pQueueFamilyIndices=s->queueFamilies.data();}
       auto r=argent::sfs::createSourceSwapchain(d,modified,out);if(r!=VK_SUCCESS){argent::log("SFS_SOURCE_CREATE_FAILED result="+std::to_string(r));return r;}
       argent::Source source;source.extent=ci->imageExtent;source.format=ci->imageFormat;source.displaySrgb=ci->imageColorSpace==VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;source.transferable=true;uint32_t count{};
@@ -553,7 +560,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue q,const VkPresentInfoKH
           if(pairReady){
             argent::StereoMirror finalMirror;
             auto mirror=s->mirrors.find(p->pSwapchains[0]);
-            if(sourcePresent&&mirror!=s->mirrors.end()&&mirror->second->needsFrame())
+            const bool scopeMirror=argent::DesktopMirror::scopeDebugRequested()&&argent::sfs::viewCount(s->device)==kharvox::sfs::kViews;
+            if(sourcePresent&&mirror!=s->mirrors.end()&&mirror->second->needsFrame()&&scopeMirror)
+              finalMirror=[&](VkImage,VkExtent2D,VkImageLayout){
+                try{static argent::FrameTiming::Totals t;argent::FrameTiming timing("desktopScopeMirror",t);
+                  mirror->second->present(*s,pair.eyes[0].image,q,argent::DesktopMirrorPacing::Clock::now(),source.extent,pair.eyes[0].layout,true,kharvox::sfs::kScopeView);
+                }catch(const std::exception& e){argent::log(e.what());}
+              };
+            else if(sourcePresent&&mirror!=s->mirrors.end()&&mirror->second->needsFrame())
               finalMirror=[&](VkImage eye,VkExtent2D extent,VkImageLayout layout){
                 try{static argent::FrameTiming::Totals t;argent::FrameTiming timing("desktopMirror",t);
                   mirror->second->present(*s,eye,q,argent::DesktopMirrorPacing::Clock::now(),extent,layout,true);

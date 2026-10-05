@@ -115,7 +115,7 @@ int main(int argc,char** argv){try{
  if(kharvox::sfs::profileHash(mask.data(),uint32_t(mask.size()*4))!=0x866fd44ba9bfea56ull)throw std::runtime_error("Distortion identity changed");
  argent::sfs::ShaderOptions shared;shared.computeStereo=false;shared.broadcastStorageImages=true;
  auto source=argent::sfs::stereoSource(mask,shared);auto first=source.find("imageStore(");auto second=source.find("imageStore(",first+1);
- if(first==std::string::npos||second==std::string::npos||source.find("imageStore(",second+1)!=std::string::npos||source.find(".z > 1")==std::string::npos)throw std::runtime_error("Distortion image not broadcast to both layers");
+ if(first==std::string::npos||second==std::string::npos||source.find("imageStore(",second+1)!=std::string::npos||source.find("khSfsLayer < imageSize(")==std::string::npos)throw std::runtime_error("Distortion image not broadcast to every view layer");
  if(argent::sfs::compileStereoShader(mask,shared).empty())throw std::runtime_error("Distortion compilation failed");
  std::cout<<tested<<" exact volume shaders (fragment and compute) and shared distortion mask compile correctly\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

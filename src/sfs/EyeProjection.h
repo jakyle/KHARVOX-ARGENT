@@ -24,8 +24,13 @@ inline bool poseMatrix(const XrPosef& pose,float units,Matrix& result){
     m[12]=pose.position.x*units;m[13]=pose.position.y*units;m[14]=pose.position.z*units;
     for(auto value:m)if(!std::isfinite(value))return false;result=m;return true;
 }
-struct alignas(16) EyeUniforms {std::array<Matrix,2> clipFromCenter;std::array<std::array<float,4>,2> eyeTranslation{};std::array<Matrix,2> screenClip{identity(),identity()};std::array<float,4> diagnostics{};};
-static_assert(sizeof(EyeUniforms)==304,"Matches ArgentEyeProjection std140 block");
+using kharvox::sfs::kViews;using kharvox::sfs::kEyeViews;using kharvox::sfs::kScopeView;
+struct alignas(16) EyeUniforms {std::array<Matrix,kViews> clipFromCenter;std::array<std::array<float,4>,kViews> eyeTranslation{};std::array<Matrix,kViews> screenClip{identity(),identity(),identity()};std::array<float,4> diagnostics{};};
+static_assert(sizeof(EyeUniforms)==64*kViews+16*kViews+64*kViews+16,"Matches ArgentEyeProjection std140 block");
+static_assert(kViews==3&&sizeof(EyeUniforms)==448,"Update the ArgentEyeProjection GLSL block in StereoSource.h with kViews");
+inline EyeUniforms identityUniforms(){EyeUniforms result{};result.clipFromCenter.fill(identity());return result;}
+// Phase 1: until a scope camera exists, the scope view renders the left eye's projection.
+inline void mirrorScopeView(EyeUniforms& u){u.clipFromCenter[kScopeView]=u.clipFromCenter[0];u.eyeTranslation[kScopeView]=u.eyeTranslation[0];u.screenClip[kScopeView]=u.screenClip[0];}
 // KHARVOX's parallel-eye contract preserves the engine depth exactly. The
 // engine camera must handle head orientation; rotating only selected clip-space
 // geometry disagrees with Eternal's culling, reconstruction and lighting.
@@ -62,7 +67,7 @@ inline bool eyeProjection(const Matrix& sourceProjection,const XrPosef& cameraIn
     for(int i:{1,2,3,4,6,7,12,13,15})if(std::abs(p[i])>1e-6f)return false;
     if(std::abs(p[11]+1)>1e-6f||p[0]<=0||p[5]>=0)return false;
     EyeUniforms result{};
-    for(int i=0;i<2;++i){
+    for(uint32_t i=0;i<kEyeViews;++i){
         Matrix eye,eyeInverse;if(!poseMatrix(eyes[i].pose,unitsPerMeter,eye)||!inverse(eye,eyeInverse))return false;
         auto f=eyes[i].fov;
         for(float angle:{f.angleLeft,f.angleRight,f.angleUp,f.angleDown})if(!std::isfinite(angle)||std::abs(angle)>=1.5707f)return false;

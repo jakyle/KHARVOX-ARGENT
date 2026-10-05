@@ -2,18 +2,19 @@
 #include <openxr/openxr.h>
 #include <array>
 #include <cmath>
+#include "ViewCount.h"
 
 namespace kharvox::sfs {
 struct alignas(16) FrameUniforms {
     struct LegacyEye {std::array<float,4> stereo{},custom{};};
-    std::array<LegacyEye,2> legacy{};
-    std::array<std::array<float,16>,2> clip{};
-    std::array<std::array<float,4>,2> translation{};
-    std::array<std::array<float,16>,2> previousClip{};
-    std::array<std::array<float,4>,2> previousTranslation{};
+    std::array<LegacyEye,kViews> legacy{};
+    std::array<std::array<float,16>,kViews> clip{};
+    std::array<std::array<float,4>,kViews> translation{};
+    std::array<std::array<float,16>,kViews> previousClip{};
+    std::array<std::array<float,4>,kViews> previousTranslation{};
     FrameUniforms(){for(auto& m:clip)for(unsigned i=0;i<4;++i)m[i*5]=1;previousClip=clip;}
 };
-static_assert(sizeof(FrameUniforms)==384,"std140 SFS frame layout");
+static_assert(sizeof(FrameUniforms)==192*kViews,"std140 SFS frame layout");
 // Exact x/y projection for parallel eye cameras. Canted/longitudinal eye offsets
 // need the game's depth projection, and must not silently use this approximation.
 inline bool frameProjection(const XrPosef& center,const XrFovf& source,
@@ -31,7 +32,7 @@ inline bool frameProjection(const XrPosef& center,const XrFovf& source,
         const XrVector3f t{2*(u.y*v.z-u.z*v.y),2*(u.z*v.x-u.x*v.z),2*(u.x*v.y-u.y*v.x)};
         return XrVector3f{v.x+q.w*t.x+u.y*t.z-u.z*t.y,v.y+q.w*t.y+u.z*t.x-u.x*t.z,v.z+q.w*t.z+u.x*t.y-u.y*t.x};
     };
-    for(unsigned e=0;e<2;++e){
+    for(unsigned e=0;e<kEyeViews;++e){
         const auto orientation=eyes[e].pose.orientation;
         const float dot=q.x*orientation.x+q.y*orientation.y+q.z*orientation.z+q.w*orientation.w;
         if(!std::isfinite(dot)||std::abs(dot)<0.99999f)return false;

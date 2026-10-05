@@ -9,6 +9,7 @@
 #include <shared_mutex>
 #include <unordered_map>
 #include <vector>
+#include "ViewCount.h"
 
 namespace kharvox::sfs {
 // Application-owned stereo sources. No WSI ownership or PRESENT layout reaches
@@ -72,14 +73,14 @@ public:
         return std::find(ownedImages_.begin(),ownedImages_.end(),image)!=ownedImages_.end();
     }
     VkResult create(const VkSwapchainCreateInfoKHR& input,VkSwapchainKHR* output) {
-        if(!output||input.flags||input.pNext||input.imageArrayLayers!=2||!input.imageExtent.width||!input.imageExtent.height||input.minImageCount>5)
+        if(!output||input.flags||input.pNext||!validViews(input.imageArrayLayers)||!input.imageExtent.width||!input.imageExtent.height||input.minImageCount>5)
             return VK_ERROR_FEATURE_NOT_PRESENT;
         std::lock_guard<std::mutex> lock(mutex_);
         if(input.oldSwapchain&&!chains_.count(input.oldSwapchain))return VK_ERROR_INITIALIZATION_FAILED;
         auto chain=std::make_unique<Chain>();chain->count=(std::max)(input.minImageCount,2u);
         VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};info.imageType=VK_IMAGE_TYPE_2D;
         info.format=input.imageFormat;info.extent={input.imageExtent.width,input.imageExtent.height,1};
-        info.mipLevels=1;info.arrayLayers=2;info.samples=VK_SAMPLE_COUNT_1_BIT;info.tiling=VK_IMAGE_TILING_OPTIMAL;
+        info.mipLevels=1;info.arrayLayers=input.imageArrayLayers;info.samples=VK_SAMPLE_COUNT_1_BIT;info.tiling=VK_IMAGE_TILING_OPTIMAL;
         info.usage=input.imageUsage|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         info.sharingMode=input.imageSharingMode;info.queueFamilyIndexCount=input.queueFamilyIndexCount;info.pQueueFamilyIndices=input.pQueueFamilyIndices;
         for(uint32_t n=0;n<chain->count;++n){

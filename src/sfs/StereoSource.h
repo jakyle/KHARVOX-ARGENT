@@ -4,12 +4,19 @@
 #include "EternalLightGrid.h"
 #include "EternalVk3d.h"
 #include "EternalWaterBounds.h"
+#include "ViewCount.h"
 namespace argent::sfs {
-struct ShaderOptions { bool project{}; bool broadcastStorageImages{}; uint32_t set{},binding{}; bool monoView{},computeStereo{true}; int indirectEye{-1}; bool screenSpaceUi{}; uint64_t volumeShader{},lightGridShader{},vk3dShader{}; bool nativeSampleLayer{}; uint64_t uiShader{}; bool nativeStorageWriteLayer{}; };
+// views: the device's runtime multiview count (2, or 3 with the scope view). The uniform block always holds kViews entries.
+struct ShaderOptions { bool project{}; bool broadcastStorageImages{}; uint32_t set{},binding{}; bool monoView{},computeStereo{true}; int indirectEye{-1}; bool screenSpaceUi{}; uint64_t volumeShader{},lightGridShader{},vk3dShader{}; bool nativeSampleLayer{}; uint64_t uiShader{}; bool nativeStorageWriteLayer{}; uint32_t views{kharvox::sfs::kViews}; };
+inline std::string eyeProjectionBlock(uint32_t set,uint32_t binding){
+    const auto n=std::to_string(kharvox::sfs::kViews);
+    return "layout(set="+std::to_string(set)+", binding="+std::to_string(binding)+", std140) uniform ArgentEyeProjection { mat4 clipFromCenter["+n+"]; vec4 eyeTranslation["+n+"]; mat4 screenClip["+n+"]; vec4 diagnostics; } argentProjection;\n";
+}
 inline std::string stereoSource(const std::vector<uint32_t>& words,const ShaderOptions& options={}) {
     spirv_cross::Compiler inspect(words);auto model=inspect.get_execution_model();bool compute=model==spv::ExecutionModelGLCompute;
     if(!compute&&model!=spv::ExecutionModelVertex&&model!=spv::ExecutionModelFragment)throw std::runtime_error("Unsupported stage; no ray tracing transformation");
     if(options.broadcastStorageImages&&(!compute||options.computeStereo))throw std::runtime_error("Broadcast requires shared mono compute");
+    if(!kharvox::sfs::validViews(options.views))throw std::runtime_error("Unsupported SFS view count");
     const bool project=options.project;
     const auto volume=eternalVolumeRule(options.volumeShader);
     const auto grid=eternalLightGridRule(options.lightGridShader);
@@ -44,7 +51,7 @@ inline std::string stereoSource(const std::vector<uint32_t>& words,const ShaderO
     // Preserve that native marker before applying any stereo/UI projection.
     const bool nativeRejectSentinel=project&&source.find("uintBitsToFloat(0xff800000u")!=std::string::npos;
     if(compute&&options.computeStereo)declarations="uint khSfsEye; uvec3 khSfsGlobalInvocationID; uvec3 khSfsWorkGroupID; uvec3 khSfsNumWorkGroups;\n";
-    if(project||volume.uv||grid.pixels||vk3dUniform)declarations+="layout(set="+std::to_string(set)+", binding="+std::to_string(binding)+", std140) uniform ArgentEyeProjection { mat4 clipFromCenter[2]; vec4 eyeTranslation[2]; mat4 screenClip[2]; vec4 diagnostics; } argentProjection;\n";
+    if(project||volume.uv||grid.pixels||vk3dUniform)declarations+=eyeProjectionBlock(set,binding);
     if(vk3d)applyEternalVk3d(source,*vk3d);
     if(options.vk3dShader==0x24abb0e76a065289ull)boundEternalWaterLists(source);
     if(volume.uv)correctEternalVolume(source,volume);
@@ -54,7 +61,7 @@ inline std::string stereoSource(const std::vector<uint32_t>& words,const ShaderO
     size_t line=0,insert=source.size();while(line<source.size()){auto end=source.find('\n',line);if(end==std::string::npos)end=source.size();auto text=source.substr(line,end-line);auto first=text.find_first_not_of(" \t\r");if(first!=std::string::npos&&text[first]!='#'){insert=line;break;}line=end+1;}
     source.insert(insert,declarations);
     if((compute&&options.computeStereo)||project){auto main=source.find("void main()");if(main==std::string::npos)throw std::runtime_error("Missing GLSL main");source.replace(main,11,"void argentOriginalMain()");source+="\nvoid main() {\n";
-        if(compute&&options.computeStereo&&options.indirectEye<0)source+="khSfsNumWorkGroups=gl_NumWorkGroups; khSfsNumWorkGroups.z/=2u;\nkhSfsEye=gl_WorkGroupID.z/khSfsNumWorkGroups.z;\nkhSfsWorkGroupID=gl_WorkGroupID; khSfsWorkGroupID.z%=khSfsNumWorkGroups.z;\nkhSfsGlobalInvocationID=gl_GlobalInvocationID; khSfsGlobalInvocationID.z-=khSfsEye*khSfsNumWorkGroups.z*gl_WorkGroupSize.z;\n";
+        if(compute&&options.computeStereo&&options.indirectEye<0)source+="khSfsNumWorkGroups=gl_NumWorkGroups; khSfsNumWorkGroups.z/="+std::to_string(options.views)+"u;\nkhSfsEye=gl_WorkGroupID.z/khSfsNumWorkGroups.z;\nkhSfsWorkGroupID=gl_WorkGroupID; khSfsWorkGroupID.z%=khSfsNumWorkGroups.z;\nkhSfsGlobalInvocationID=gl_GlobalInvocationID; khSfsGlobalInvocationID.z-=khSfsEye*khSfsNumWorkGroups.z*gl_WorkGroupSize.z;\n";
         if(compute&&options.computeStereo&&options.indirectEye>=0)source+="khSfsEye="+std::to_string(options.indirectEye)+"u; khSfsNumWorkGroups=gl_NumWorkGroups; khSfsWorkGroupID=gl_WorkGroupID; khSfsGlobalInvocationID=gl_GlobalInvocationID;\n";
         source+="argentOriginalMain();\n";
         if(project){
@@ -98,7 +105,7 @@ inline std::string stereoSource(const std::vector<uint32_t>& words,const ShaderO
         }
         source+="}\n";
     }
-    if(options.indirectEye < -1 || options.indirectEye > 1 || (options.indirectEye>=0&&(!compute||!options.computeStereo)))throw std::runtime_error("Invalid fixed-eye compute policy");
+    if(options.indirectEye < -1 || options.indirectEye >= int(options.views) || (options.indirectEye>=0&&(!compute||!options.computeStereo)))throw std::runtime_error("Invalid fixed-eye compute policy");
     if(options.monoView){size_t pos=0;while((pos=source.find("gl_ViewIndex",pos))!=std::string::npos){source.replace(pos,12,"0");++pos;}}
     return source;
 }

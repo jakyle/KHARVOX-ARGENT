@@ -93,8 +93,8 @@ protected:
             if(write&&broadcastWrites_){
                 // Shared exposure/history executes once; only its image result
                 // is broadcast. Buffer updates must not run a second time.
-                copy.ops[index]=coordinate(words[index],true,"1");
-                statement("if (imageSize(",image,").z > 1)");begin_scope();
+                copy.ops[index]=coordinate(words[index],true,"khSfsLayer");
+                statement("for (int khSfsLayer = 1; khSfsLayer < imageSize(",image,").z; ++khSfsLayer)");begin_scope();
                 CompilerGLSL::emit_instruction(copy);end_scope();
             }
             return;

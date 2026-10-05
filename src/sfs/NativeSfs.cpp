@@ -62,9 +62,9 @@ uint64_t threadCpuUs(){FILETIME created{},exited{},kernel{},user{};
 struct PipelineSnapshot {
     VkPipeline stereo{};
     bool computeStereo{},sky{};
-    std::array<VkPipeline,2> indirect{};
+    std::array<VkPipeline,kViews> indirect{};
     uintptr_t monoMarker{},stereoMarker{},endMarker{};
-    std::array<uintptr_t,2> indirectMarkers{},indirectEndMarkers{};
+    std::array<uintptr_t,kViews> indirectMarkers{},indirectEndMarkers{};
 };
 struct CommandState {
     std::unique_ptr<argent::perf::CommandCensus> census;
@@ -104,6 +104,7 @@ struct State : std::enable_shared_from_this<State> {
     std::atomic<bool> loggedNativePipelineBind{};
     std::atomic<uint64_t> descriptorCacheMisses{};
     VkDevice device{};NativeDispatch dispatch;
+    uint32_t views=kViews; // Fixed at initialization: kViews with the scope view, kEyeViews as fallback.
     std::unique_ptr<SourceRing> sources;
     // Command buffers are externally synchronized by Vulkan callers. Parallel
     // recorders share resource metadata; only creation/retirement needs exclusivity.
@@ -139,11 +140,11 @@ struct State : std::enable_shared_from_this<State> {
     std::unordered_map<VkRenderPass,VkRenderPass> passes;
     std::unordered_map<VkImageView,uint32_t> viewLayers;
     std::unordered_map<VkImageView,VkImageViewCreateInfo> viewInfos;
-    std::unordered_map<VkImageView,std::array<VkImageView,2>> eyeViews;
+    std::unordered_map<VkImageView,std::array<VkImageView,kViews>> eyeViews;
     std::unordered_map<VkFramebuffer,bool> framebufferStereo;
     std::unordered_map<VkPipeline,VkPipeline> stereoPipelines;
     std::unordered_map<VkPipeline,bool> computeStereo;
-    std::unordered_map<VkPipeline,std::array<VkPipeline,2>> indirectPipelines;
+    std::unordered_map<VkPipeline,std::array<VkPipeline,kViews>> indirectPipelines;
     std::unordered_map<VkFramebuffer,bool> mixedFramebuffers;
     std::atomic<uint64_t> indirectMono{},indirectStereo{},mixedPasses{};
     uint32_t mixedDiagnostics{};
@@ -279,7 +280,7 @@ VkShaderModule compiledModule(State* s,VkShaderModule original,uint64_t variant,
     options.project=!skipProjection&&model==spv::ExecutionModelVertex&&(s->configuration.projectionShaders.count(keyHash)!=0||options.screenSpaceUi);
     if((options.project||options.volumeShader||options.lightGridShader||(vk3d&&vk3d->worldUniform))&&projectionBinding==UINT32_MAX)throw std::runtime_error("Projected shader has no descriptor set zero");
     options.broadcastStorageImages=s->configuration.broadcastComputeShaders.count(keyHash)!=0;
-    options.computeStereo=stereoCompute;options.indirectEye=indirectEye;options.monoView=monoView;
+    options.computeStereo=stereoCompute;options.indirectEye=indirectEye;options.monoView=monoView;options.views=s->views;
     const auto key=shaderKey(keyHash)+(options.project?"_project":"_flat")+"_binding"+std::to_string(projectionBinding)+"_"+std::to_string(indirectEye)+(monoView?"_mono":"");
     auto cached=s->compiled.find(key);if(cached!=s->compiled.end())return cached->second;
     const auto compileStart=s->profileTiming?CommandCpuTiming::now():0;
@@ -319,7 +320,7 @@ VKAPI_ATTR void VKAPI_CALL destroyImage(VkDevice d,VkImage image,const VkAllocat
  });
 }
 VKAPI_ATTR VkResult VKAPI_CALL createView(VkDevice d,const VkImageViewCreateInfo* i,const VkAllocationCallbacks* a,VkImageView* out){RESULT_BEGIN
-    auto info=s->images.shaderViewInfo(*i);auto r=FN(vkCreateImageView)(d,&info,a,out);if(r==VK_SUCCESS){handDepth::handSceneImageViewCreated(*out,info);waterCaptureView(d,*out,info);if(s->waterCapture)s->waterCapture->view(*out,info);s->viewLayers[*out]=(s->images.layers(i->image)==2&&info.subresourceRange.baseArrayLayer==0&&info.subresourceRange.layerCount>=2)?2:1;if(!info.pNext)s->viewInfos[*out]=info;}return r;
+    auto info=s->images.shaderViewInfo(*i);auto r=FN(vkCreateImageView)(d,&info,a,out);if(r==VK_SUCCESS){handDepth::handSceneImageViewCreated(*out,info);waterCaptureView(d,*out,info);if(s->waterCapture)s->waterCapture->view(*out,info);const auto layers=s->images.layers(i->image);s->viewLayers[*out]=(layers>1&&info.subresourceRange.baseArrayLayer==0&&info.subresourceRange.layerCount>=layers)?layers:1;if(!info.pNext)s->viewInfos[*out]=info;}return r;
 RESULT_END}
 VKAPI_ATTR void VKAPI_CALL destroyView(VkDevice d,VkImageView view,const VkAllocationCallbacks* a){
  kharvox::gameImageLifetime().retire(kharvox::GameImageLifetime::key(view),[&]{
@@ -332,7 +333,7 @@ VKAPI_ATTR VkResult VKAPI_CALL createPass(VkDevice d,const VkRenderPassCreateInf
         if(attachment.initialLayout==VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)attachment.initialLayout=VK_IMAGE_LAYOUT_GENERAL;
         if(attachment.finalLayout==VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)attachment.finalLayout=VK_IMAGE_LAYOUT_GENERAL;
     }input.pAttachments=attachments.data();}
-    RenderPassPlan plan(input,true);if(!plan.valid())return VK_ERROR_FEATURE_NOT_PRESENT;
+    RenderPassPlan plan(input,true,s->views);if(!plan.valid())return VK_ERROR_FEATURE_NOT_PRESENT;
     auto r=FN(vkCreateRenderPass)(d,&input,a,out);if(r!=VK_SUCCESS)return r;VkRenderPass stereo{};r=FN(vkCreateRenderPass)(d,&plan.info(),a,&stereo);
     if(r!=VK_SUCCESS){FN(vkDestroyRenderPass)(d,*out,a);*out=VK_NULL_HANDLE;return r;}s->passes[*out]=stereo;handDepth::handSceneRenderPassCreated(*out,input);if(s->waterCapture)s->waterCapture->renderPass(*out,input);return VK_SUCCESS;
 RESULT_END}
@@ -475,22 +476,22 @@ VKAPI_ATTR VkResult VKAPI_CALL compute(VkDevice d,VkPipelineCache cache,uint32_t
         info.stage.module=compiledModule(s,original,0,stereo,s->pipelineBindings.at(info.layout),false,-1,false,&compileNs);
         const auto label=s->checkpoint?"compute shader="+shaderKey(profileHash(s->shaders.at(original).data(),uint32_t(s->shaders.at(original).size()*4))):std::string{};
         const bool indirect=stereo;
-        std::array<VkShaderModule,2> modules{};
-        if(indirect)for(int eye=0;eye<2;++eye){bool ignored{};modules[eye]=compiledModule(s,original,0,ignored,s->pipelineBindings.at(info.layout),false,eye,false,&compileNs);}
-        std::array<VkPipeline,2> eyes{};
+        std::array<VkShaderModule,kViews> modules{};
+        if(indirect)for(int eye=0;eye<int(s->views);++eye){bool ignored{};modules[eye]=compiledModule(s,original,0,ignored,s->pipelineBindings.at(info.layout),false,eye,false,&compileNs);}
+        std::array<VkPipeline,kViews> eyes{};
         {
         UnlockedDriverScope unlocked(lock);
         const auto started=s->profileTiming?CommandCpuTiming::now():0;
         auto r=FN(vkCreateComputePipelines)(d,cache,1,&info,a,&out[j]);if(r!=VK_SUCCESS)return r;
-        if(indirect)for(int eye=0;eye<2;++eye){info.stage.module=modules[eye];r=FN(vkCreateComputePipelines)(d,cache,1,&info,a,&eyes[eye]);
+        if(indirect)for(int eye=0;eye<int(s->views);++eye){info.stage.module=modules[eye];r=FN(vkCreateComputePipelines)(d,cache,1,&info,a,&eyes[eye]);
             if(r!=VK_SUCCESS){for(auto p:eyes)if(p)FN(vkDestroyPipeline)(d,p,a);FN(vkDestroyPipeline)(d,out[j],a);out[j]=VK_NULL_HANDLE;return r;}}
-        if(started){driverNs=CommandCpuTiming::now()-started;const auto ms=double(driverNs)/1000000.;if(ms>=2)note("pipeline driver type=compute variants="+std::to_string(indirect?3:1)+" wallMs="+std::to_string(ms));}
+        if(started){driverNs=CommandCpuTiming::now()-started;const auto ms=double(driverNs)/1000000.;if(ms>=2)note("pipeline driver type=compute variants="+std::to_string(indirect?s->views+1:1)+" wallMs="+std::to_string(ms));}
         }
         if(indirect)s->indirectPipelines[out[j]]=eyes;
         s->computeStereo[out[j]]=stereo;
         if(s->waterCapture)s->waterCapture->pipeline(out[j],profile);
         if(profile==0x24abb0e76a065289ull)note("WATER_DISPATCH mode=per-eye shader="+shaderKey(profile));
-        if(s->checkpoint){registerMarker(s,out[j],label);for(unsigned eye=0;eye<2;++eye)if(eyes[eye])registerMarker(s,eyes[eye],label+" eye="+std::to_string(eye));}
+        if(s->checkpoint){registerMarker(s,out[j],label);for(unsigned eye=0;eye<s->views;++eye)if(eyes[eye])registerMarker(s,eyes[eye],label+" eye="+std::to_string(eye));}
         if(argent::perf::enabled())note("PERF_PIPELINE kind=compute pipeline="+std::to_string(reinterpret_cast<uint64_t>(out[j]))+" shaders="+shaderHash);
         recordPipelineBuild(s,"compute",shaderHash,buildStart,cpuStart,j==0?batchLockNs:0,compileNs,driverNs);
     }return VK_SUCCESS;
@@ -559,7 +560,7 @@ VKAPI_ATTR void VKAPI_CALL bindPipeline(VkCommandBuffer cb,VkPipelineBindPoint p
         if(s->checkpoint){auto marker=s->pipelineMarkers.find(pipeline);if(marker!=s->pipelineMarkers.end())result.monoMarker=marker->second;
             marker=s->pipelineMarkers.find(result.stereo);if(marker!=s->pipelineMarkers.end())result.stereoMarker=marker->second;
             auto end=s->dispatchEndMarkers.find(pipeline);if(end!=s->dispatchEndMarkers.end())result.endMarker=end->second;
-            for(size_t eye=0;eye<2;++eye){marker=s->pipelineMarkers.find(result.indirect[eye]);if(marker!=s->pipelineMarkers.end())result.indirectMarkers[eye]=marker->second;
+            for(size_t eye=0;eye<s->views;++eye){marker=s->pipelineMarkers.find(result.indirect[eye]);if(marker!=s->pipelineMarkers.end())result.indirectMarkers[eye]=marker->second;
                 end=s->dispatchEndMarkers.find(result.indirect[eye]);if(end!=s->dispatchEndMarkers.end())result.indirectEndMarkers[eye]=end->second;}}
         return result;
     });
@@ -708,7 +709,7 @@ VKAPI_ATTR void VKAPI_CALL dispatch(VkCommandBuffer cb,uint32_t x,uint32_t y,uin
     ComputeGpuScope gpuScope(local,cb,x,y,z,false);
     if(!argent::cleanRelease&&local.census)local.census->add(argent::perf::Dispatch,true);
     if(!local.compute)throw std::runtime_error("SFS dispatch without compute pipeline");
-    uint32_t depth{};if(!dispatchDepth(z,local.computeInfo.computeStereo,65535,depth))throw std::runtime_error("Stereo dispatch exceeds limit");
+    uint32_t depth{};if(!dispatchDepth(z,local.computeInfo.computeStereo,65535,depth,s->views))throw std::runtime_error("Stereo dispatch exceeds limit");
     WaterGpuCapture::Ticket capture;
     if(s->waterCapture&&s->waterCapture->armed()){std::vector<WaterGpuCapture::BoundSet> bound;for(const auto& b:local.computeDescriptors)bound.push_back({b.set,b.dynamic});capture=s->waterCapture->before(cb,local.compute,bound,x,y,depth,local.waterEligible,local.captureGraphicsQueue);if(capture){std::shared_lock<std::shared_mutex> guard(s->mutex);const auto* bytes=reinterpret_cast<const unsigned char*>(&s->renderUniforms);capture->projection.assign(bytes,bytes+sizeof(s->renderUniforms));capture->frameSerial=s->renderPose.serial;}}
     checkpoint(s,cb,local.computeInfo.monoMarker);FN(vkCmdDispatch)(cb,x,y,depth);checkpoint(s,cb,local.computeInfo.endMarker);
@@ -723,7 +724,7 @@ VKAPI_ATTR void VKAPI_CALL dispatchIndirect(VkCommandBuffer cb,VkBuffer buffer,V
         if(s->profileTiming)s->indirectMono.fetch_add(1,std::memory_order_relaxed);
         checkpoint(s,cb,info.monoMarker);FN(vkCmdDispatchIndirect)(cb,buffer,offset);checkpoint(s,cb,info.endMarker);return;
     }
-    if(!info.indirect[0]||!info.indirect[1])throw std::runtime_error("SFS indirect compute uses an unsupported profile replacement; refusing left-eye-only output");
+    for(uint32_t view=0;view<s->views;++view)if(!info.indirect[view])throw std::runtime_error("SFS indirect compute uses an unsupported profile replacement; refusing left-eye-only output");
     if(s->profileTiming)s->indirectStereo.fetch_add(1,std::memory_order_relaxed);
     WaterGpuCapture::Ticket capture;
     // Atmosphere can use GPU-owned indirect counts. Capture around the entire
@@ -731,11 +732,11 @@ VKAPI_ATTR void VKAPI_CALL dispatchIndirect(VkCommandBuffer cb,VkBuffer buffer,V
     if(s->waterCapture&&s->waterCapture->armed()){std::vector<WaterGpuCapture::BoundSet> bound;for(const auto& b:local.computeDescriptors)bound.push_back({b.set,b.dynamic});capture=s->waterCapture->before(cb,pipeline,bound,0,0,0,local.waterEligible,local.captureGraphicsQueue);if(capture){std::shared_lock<std::shared_mutex> guard(s->mutex);const auto* bytes=reinterpret_cast<const unsigned char*>(&s->renderUniforms);capture->projection.assign(bytes,bytes+sizeof(s->renderUniforms));capture->frameSerial=s->renderPose.serial;}}
     // Counts remain GPU-owned and unchanged. Each variant uses the full original
     // workgroup grid and writes its own eye layer; shared-buffer-only work stays mono.
-    for(size_t eye=0;eye<2;++eye){FN(vkCmdBindPipeline)(cb,VK_PIPELINE_BIND_POINT_COMPUTE,info.indirect[eye]);checkpoint(s,cb,info.indirectMarkers[eye]);FN(vkCmdDispatchIndirect)(cb,buffer,offset);checkpoint(s,cb,info.indirectEndMarkers[eye]);}
+    for(size_t eye=0;eye<s->views;++eye){FN(vkCmdBindPipeline)(cb,VK_PIPELINE_BIND_POINT_COMPUTE,info.indirect[eye]);checkpoint(s,cb,info.indirectMarkers[eye]);FN(vkCmdDispatchIndirect)(cb,buffer,offset);checkpoint(s,cb,info.indirectEndMarkers[eye]);}
     if(capture)s->waterCapture->after(cb,capture);
     FN(vkCmdBindPipeline)(cb,VK_PIPELINE_BIND_POINT_COMPUTE,pipeline);
 COMMAND_END}
-VkImageSubresourceRange range(State* s,VkImage image,VkImageSubresourceRange value){if(s->images.layers(image)==2&&value.baseArrayLayer==0&&value.layerCount==1)value.layerCount=2;return value;}
+VkImageSubresourceRange range(State* s,VkImage image,VkImageSubresourceRange value){const auto layers=s->images.layers(image);if(layers>1&&value.baseArrayLayer==0&&value.layerCount==1)value.layerCount=layers;return value;}
 VKAPI_ATTR void VKAPI_CALL barriers(VkCommandBuffer cb,VkPipelineStageFlags src,VkPipelineStageFlags dst,VkDependencyFlags deps,uint32_t nm,const VkMemoryBarrier* m,uint32_t nb,const VkBufferMemoryBarrier* b,uint32_t ni,const VkImageMemoryBarrier* i){
     // Buffer/global dependencies have no image layers or presentation layout
     // to translate. Avoid the shared metadata lock and command-map lookup.
@@ -755,13 +756,15 @@ VKAPI_ATTR void VKAPI_CALL clearDepth(VkCommandBuffer cb,VkImage image,VkImageLa
     auto& copies=commandUnderLock(s,cb).clearRanges;copies.clear();if(count)copies.assign(ranges,ranges+count);for(auto& r:copies)r=range(s,image,r);FN(vkCmdClearDepthStencilImage)(cb,image,layout,value,count,copies.data());
 COMMAND_END}
 template<class T>std::vector<T> copyRegions(State* s,VkImage src,VkImage dst,uint32_t count,const T* regions){
-    std::vector<T> result;for(uint32_t j=0;j<count;++j){auto region=regions[j];result.push_back(region);if(s->images.layers(dst)==2&&region.dstSubresource.baseArrayLayer==0&&region.dstSubresource.layerCount==1){region.dstSubresource.baseArrayLayer=1;if(s->images.layers(src)==2)region.srcSubresource.baseArrayLayer=1;result.push_back(region);}}return result;
+    const auto dstLayers=s->images.layers(dst),srcLayers=s->images.layers(src);
+    std::vector<T> result;for(uint32_t j=0;j<count;++j){auto region=regions[j];result.push_back(region);if(dstLayers>1&&region.dstSubresource.baseArrayLayer==0&&region.dstSubresource.layerCount==1)for(uint32_t layer=1;layer<dstLayers;++layer){region.dstSubresource.baseArrayLayer=layer;if(srcLayers==dstLayers)region.srcSubresource.baseArrayLayer=layer;result.push_back(region);}}return result;
 }
 VKAPI_ATTR void VKAPI_CALL copyImage(VkCommandBuffer cb,VkImage src,VkImageLayout sl,VkImage dst,VkImageLayout dl,uint32_t count,const VkImageCopy* regions){COMMAND_BEGIN auto r=copyRegions(s,src,dst,count,regions);FN(vkCmdCopyImage)(cb,src,sl,dst,dl,uint32_t(r.size()),r.data());COMMAND_END}
 VKAPI_ATTR void VKAPI_CALL blitImage(VkCommandBuffer cb,VkImage src,VkImageLayout sl,VkImage dst,VkImageLayout dl,uint32_t count,const VkImageBlit* regions,VkFilter filter){COMMAND_BEGIN auto r=copyRegions(s,src,dst,count,regions);FN(vkCmdBlitImage)(cb,src,sl,dst,dl,uint32_t(r.size()),r.data(),filter);COMMAND_END}
 VKAPI_ATTR void VKAPI_CALL resolveImage(VkCommandBuffer cb,VkImage src,VkImageLayout sl,VkImage dst,VkImageLayout dl,uint32_t count,const VkImageResolve* regions){COMMAND_BEGIN auto r=copyRegions(s,src,dst,count,regions);FN(vkCmdResolveImage)(cb,src,sl,dst,dl,uint32_t(r.size()),r.data());COMMAND_END}
 VKAPI_ATTR void VKAPI_CALL uploadImage(VkCommandBuffer cb,VkBuffer buffer,VkImage image,VkImageLayout layout,uint32_t count,const VkBufferImageCopy* regions){COMMAND_BEGIN
-    std::vector<VkBufferImageCopy> copies;for(uint32_t j=0;j<count;++j){auto r=regions[j];copies.push_back(r);if(s->images.layers(image)==2&&r.imageSubresource.baseArrayLayer==0&&r.imageSubresource.layerCount==1){r.imageSubresource.baseArrayLayer=1;copies.push_back(r);}}FN(vkCmdCopyBufferToImage)(cb,buffer,image,layout,uint32_t(copies.size()),copies.data());
+    const auto layers=s->images.layers(image);
+    std::vector<VkBufferImageCopy> copies;for(uint32_t j=0;j<count;++j){auto r=regions[j];copies.push_back(r);if(layers>1&&r.imageSubresource.baseArrayLayer==0&&r.imageSubresource.layerCount==1)for(uint32_t layer=1;layer<layers;++layer){r.imageSubresource.baseArrayLayer=layer;copies.push_back(r);}}FN(vkCmdCopyBufferToImage)(cb,buffer,image,layout,uint32_t(copies.size()),copies.data());
 COMMAND_END}
 }
 bool nativeProbeEnabled(){static const bool enabled=[] {char value[8]{};return GetEnvironmentVariableA("ARGENT_SFS_NATIVE_PROBE",value,8)==1&&value[0]=='1';}();return enabled;}
@@ -770,6 +773,8 @@ bool initialize(VkDevice d,VkPhysicalDevice physical,PFN_vkGetDeviceProcAddr gdp
     if(!nativeProbeEnabled())return true;
     auto s=std::make_shared<State>();
     try{s->device=d;s->resolver=gdpa;s->configuration=configuration;s->dispatch.load(d,gdpa);
+        if(!validViews(configuration.views))throw std::runtime_error("Unsupported SFS view count "+std::to_string(configuration.views));
+        s->views=configuration.views;s->images.setViews(s->views);note("SFS_VIEWS count="+std::to_string(s->views)+" scope="+std::to_string(s->views==kViews));
         auto captureRoot=WaterGpuCapture::requestedRoot();if(!captureRoot.empty()){s->waterCapture=std::make_unique<WaterGpuCapture>(d,gdpa,memory,captureRoot,note,WaterGpuCapture::shadingShader,true);note("WATER_GPU_CAPTURE target=geometry-shading-and-scene snapshots=9");}
         // Queue families are supplied by configurePerformanceGpu before recording.
 
@@ -778,13 +783,13 @@ bool initialize(VkDevice d,VkPhysicalDevice physical,PFN_vkGetDeviceProcAddr gdp
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};bi.size=sizeof(EyeUniforms);bi.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;if(FN(vkCreateBuffer)(d,&bi,nullptr,&s->params)!=VK_SUCCESS)return false;
         VkMemoryRequirements r{};FN(vkGetBufferMemoryRequirements)(d,s->params,&r);uint32_t index=UINT32_MAX;for(uint32_t j=0;j<memory.memoryTypeCount;++j)if((r.memoryTypeBits&(1u<<j))&&(memory.memoryTypes[j].propertyFlags&(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))==(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)){index=j;break;}
         if(index==UINT32_MAX)throw std::runtime_error("No coherent SFS parameter memory");VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};ai.allocationSize=r.size;ai.memoryTypeIndex=index;if(FN(vkAllocateMemory)(d,&ai,nullptr,&s->paramsMemory)!=VK_SUCCESS)throw std::runtime_error("SFS parameter allocation failed");if(FN(vkBindBufferMemory)(d,s->params,s->paramsMemory,0)!=VK_SUCCESS)throw std::runtime_error("SFS parameter bind failed");
-        void* mapped{};if(FN(vkMapMemory)(d,s->paramsMemory,0,sizeof(EyeUniforms),0,&mapped)!=VK_SUCCESS)throw std::runtime_error("SFS parameter map failed");EyeUniforms initial{{identity(),identity()},{}};std::memcpy(mapped,&initial,sizeof(initial));FN(vkUnmapMemory)(d,s->paramsMemory);
+        void* mapped{};if(FN(vkMapMemory)(d,s->paramsMemory,0,sizeof(EyeUniforms),0,&mapped)!=VK_SUCCESS)throw std::runtime_error("SFS parameter map failed");const auto initial=identityUniforms();std::memcpy(mapped,&initial,sizeof(initial));FN(vkUnmapMemory)(d,s->paramsMemory);
         {std::lock_guard<std::mutex> lock(devicesMutex);devices[dispatchKey(d)]=s;deviceGeneration.fetch_add(1,std::memory_order_release);}note(vrEnabled()?"native SFS experimental OpenXR producer initialized":"native multiview probe initialized; fixed identity projection; NOT VR");return true;
     }catch(const std::exception& e){note(e.what());if(s->params)FN(vkDestroyBuffer)(d,s->params,nullptr);if(s->paramsMemory)FN(vkFreeMemory)(d,s->paramsMemory,nullptr);return false;}
 }
 void shutdown(VkDevice d){if(!nativeProbeEnabled())return;std::shared_ptr<State> s;try{s=state(d)->shared_from_this();}catch(const std::exception&){return;}std::unique_lock<std::shared_mutex> lock(s->mutex);if(FN(vkDeviceWaitIdle)(d)!=VK_SUCCESS)commandFailure("SFS shutdown retirement failed");if(s->waterCapture){s->waterCapture->poll(false);s->waterCapture->shutdown();}for(auto& c:s->commands)c.second.gpu.shutdownAfterCompletion();handDepth::handSceneDeviceDestroyed();s->commandRetirement.fetch_add(1,std::memory_order_release);s->commands.clear();s->queryResolver.reset();if(s->sources)s->sources->clearAfterDeviceIdle();for(auto& entry:s->eyeViews)for(auto eye:entry.second)if(eye)FN(vkDestroyImageView)(d,eye,nullptr);s->eyeViews.clear();for(auto& module:s->compiled)FN(vkDestroyShaderModule)(d,module.second,nullptr);FN(vkDestroyBuffer)(d,s->params,nullptr);FN(vkFreeMemory)(d,s->paramsMemory,nullptr);std::lock_guard<std::mutex> devicesLock(devicesMutex);for(auto it=devices.begin();it!=devices.end();)if(it->second==s)it=devices.erase(it);else ++it;deviceGeneration.fetch_add(1,std::memory_order_release);}
 bool vrEnabled(){static const bool enabled=[] {char value[8]{};return GetEnvironmentVariableA("ARGENT_SFS_NATIVE_VR",value,8)==1&&value[0]=='1';}();return nativeProbeEnabled()&&enabled;}
-bool dlssEyeResources(VkCommandBuffer command,const std::array<const dlss::Resource*,30>& input,std::array<dlss::EyeParameters,2>& output,FramePose& pose){
+bool dlssEyeResources(VkCommandBuffer command,const std::array<const dlss::Resource*,30>& input,std::array<dlss::EyeParameters,kViews>& output,FramePose& pose){
     auto s=state(command);std::unique_lock<std::shared_mutex> lock(s->mutex);
     pose=s->renderPose;
     for(size_t i=0;i<input.size();++i){
@@ -794,13 +799,13 @@ bool dlssEyeResources(VkCommandBuffer command,const std::array<const dlss::Resou
         const auto& info=found->second;
         if(info.image!=resource.image||info.format!=resource.format||info.subresourceRange.levelCount!=1||
            (info.viewType!=VK_IMAGE_VIEW_TYPE_2D_ARRAY&&info.viewType!=VK_IMAGE_VIEW_TYPE_2D))return false;
-        const bool stereo=info.viewType==VK_IMAGE_VIEW_TYPE_2D_ARRAY&&info.subresourceRange.layerCount==2;
-        // Scene color, output, depth and motion must all describe both eyes.
+        const bool stereo=info.viewType==VK_IMAGE_VIEW_TYPE_2D_ARRAY&&info.subresourceRange.layerCount==s->views;
+        // Scene color, output, depth and motion must all describe every view.
         // Exposure and optional masks may legitimately be shared mono inputs.
         if(i<4&&!stereo)return false;
         if(!stereo&&info.subresourceRange.layerCount!=1)return false;
         auto& cached=s->eyeViews[resource.view];
-        for(uint32_t eye=0;eye<2;++eye){
+        for(uint32_t eye=0;eye<s->views;++eye){
             const uint32_t index=stereo?eye:0;
             auto viewInfo=info;viewInfo.viewType=VK_IMAGE_VIEW_TYPE_2D;
             viewInfo.subresourceRange.baseArrayLayer+=index;viewInfo.subresourceRange.layerCount=1;
@@ -812,11 +817,12 @@ bool dlssEyeResources(VkCommandBuffer command,const std::array<const dlss::Resou
     return true;
 }
 bool eyeAttachmentView(VkDevice d,VkImageView original,uint32_t eye,VkImageView& result){
-    result=VK_NULL_HANDLE;if(!nativeProbeEnabled()||eye>1)return false;
+    result=VK_NULL_HANDLE;if(!nativeProbeEnabled()||eye>=kViews)return false;
     auto s=state(d);std::unique_lock<std::shared_mutex> lock(s->mutex);
+    if(eye>=s->views)return false;
     auto found=s->viewInfos.find(original);if(found==s->viewInfos.end())return false;
     auto info=found->second;
-    if(info.viewType!=VK_IMAGE_VIEW_TYPE_2D_ARRAY||info.subresourceRange.layerCount<2)return false;
+    if(info.viewType!=VK_IMAGE_VIEW_TYPE_2D_ARRAY||info.subresourceRange.layerCount<=eye)return false;
     auto& cached=s->eyeViews[original][eye];
     if(!cached){info.viewType=VK_IMAGE_VIEW_TYPE_2D;info.subresourceRange.baseArrayLayer+=eye;info.subresourceRange.layerCount=1;
         if(FN(vkCreateImageView)(d,&info,nullptr,&cached)!=VK_SUCCESS)return false;}
@@ -909,10 +915,10 @@ VkResult beginFrame(VkDevice d,VkSwapchainKHR chain,uint32_t imageIndex){
 bool pair(VkDevice d,VkImage image,VkExtent2D extent,VkFormat format,StereoFrame& result){
     if(!vrEnabled())return false;auto s=state(d);std::unique_lock<std::shared_mutex> lock(s->mutex);
     const auto found=s->imagePoses.find(image);
-    if(found==s->imagePoses.end()||s->images.layers(image)!=2)return false;
+    if(found==s->imagePoses.end()||s->images.layers(image)!=s->views)return false;
     auto pose=found->second;
     result={};result.pose=pose;result.generation=pose.serial;
-    for(uint32_t e=0;e<2;++e)result.eyes[e]={image,extent,format,sourceLayout(d,image,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),pose.views[e].pose,pose.views[e].fov,e,pose.serial};
+    for(uint32_t e=0;e<kEyeViews;++e)result.eyes[e]={image,extent,format,sourceLayout(d,image,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),pose.views[e].pose,pose.views[e].fov,e,pose.serial};
     return true;
 }
 void swapchainImages(VkDevice d,VkSwapchainKHR chain,uint32_t count,const VkImage* images){
@@ -923,8 +929,10 @@ void swapchainImages(VkDevice d,VkSwapchainKHR chain,uint32_t count,const VkImag
     if(tracked==std::vector<VkImage>(images,images+count))return;
     for(auto image:tracked){s->imagePoses.erase(image);s->imageUniforms.erase(image);s->images.destroy(d,image,nullptr,nullptr);}
     tracked.assign(images,images+count);
-    for(auto image:tracked)s->images.track(image,2);
+    for(auto image:tracked)s->images.track(image,s->views);
 }
+uint32_t viewCount(VkDevice d){if(!nativeProbeEnabled())return kEyeViews;try{auto s=state(d);return s->views;}catch(const std::exception&){return kEyeViews;}}
+uint32_t viewCount(VkCommandBuffer cb){if(!nativeProbeEnabled())return kEyeViews;try{auto s=state(cb);return s->views;}catch(const std::exception&){return kEyeViews;}}
 void swapchainDestroyed(VkDevice d,VkSwapchainKHR chain){
     if(!nativeProbeEnabled())return;
     auto s=state(d);std::unique_lock<std::shared_mutex> lock(s->mutex);

@@ -175,7 +175,7 @@ int main(int argc,char** argv){try{
 #else
  argent::sfs::SourceRing ring;check(ring.initialize(device,queue,vkGetDeviceProcAddr,memory,nullptr,nullptr),"Ring init failed");
 #endif
- VkSwapchainCreateInfoKHR chainInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};chainInfo.minImageCount=2;chainInfo.imageFormat=VK_FORMAT_R8G8B8A8_UNORM;chainInfo.imageExtent={4,4};chainInfo.imageArrayLayers=2;chainInfo.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+ VkSwapchainCreateInfoKHR chainInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};chainInfo.minImageCount=2;chainInfo.imageFormat=VK_FORMAT_R8G8B8A8_UNORM;chainInfo.imageExtent={4,4};chainInfo.imageArrayLayers=kharvox::sfs::kViews;chainInfo.imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 #ifdef KHARVOX_SFS_TEST_INDIRECT
  chainInfo.imageUsage|=VK_IMAGE_USAGE_STORAGE_BIT;
 #endif
@@ -215,10 +215,12 @@ int main(int argc,char** argv){try{
  argent::dlss::Resource dlssInput{};dlssInput.view=views[0];dlssInput.image=images[0];
  dlssInput.range={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};dlssInput.format=chainInfo.imageFormat;dlssInput.width=dlssInput.height=4;
  std::array<const argent::dlss::Resource*,30> dlssInputs{};for(int i=0;i<4;++i)dlssInputs[i]=&dlssInput;
- std::array<argent::dlss::EyeParameters,2> dlssEyes{};argent::sfs::FramePose dlssPose{};
+ std::array<argent::dlss::EyeParameters,kharvox::sfs::kViews> dlssEyes{};argent::sfs::FramePose dlssPose{};
  check(argent::sfs::dlssEyeResources(command,dlssInputs,dlssEyes,dlssPose),"External stereo view resolution failed");
  const auto leftDlss=dlssEyes[0].resources[0].view,rightDlss=dlssEyes[1].resources[0].view;
- check(leftDlss&&rightDlss&&leftDlss!=rightDlss,"DLSS eye views alias");
+ const auto scopeDlss=dlssEyes[kharvox::sfs::kScopeView].resources[0].view;
+ check(leftDlss&&rightDlss&&scopeDlss&&leftDlss!=rightDlss&&scopeDlss!=leftDlss&&scopeDlss!=rightDlss,"DLSS view images alias");
+ check(dlssEyes[kharvox::sfs::kScopeView].resources[0].range.baseArrayLayer==kharvox::sfs::kScopeView,"DLSS scope range is not layer 2");
  check(dlssEyes[0].resources[0].range.baseArrayLayer==0&&dlssEyes[1].resources[0].range.baseArrayLayer==1&&dlssEyes[1].resources[0].range.layerCount==1,"DLSS subresource range is not per-eye");
  check(argent::sfs::dlssEyeResources(command,dlssInputs,dlssEyes,dlssPose)&&dlssEyes[0].resources[0].view==leftDlss&&dlssEyes[1].resources[0].view==rightDlss,"DLSS views allocated again on steady path");
  dlssInput.image=images[1];check(!argent::sfs::dlssEyeResources(command,dlssInputs,dlssEyes,dlssPose),"Mismatched NGX view/image pair accepted");
@@ -356,7 +358,7 @@ int main(int argc,char** argv){try{
   auto barrier=[&](VkImageLayout oldLayout,VkImageLayout newLayout,VkAccessFlags src,VkAccessFlags dst){VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};b.image=images[index];b.oldLayout=oldLayout;b.newLayout=newLayout;b.srcAccessMask=src;b.dstAccessMask=dst;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,2};vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,0,nullptr,0,nullptr,1,&b);};
 #ifdef KHARVOX_SFS_RING_RUNTIME
   VkClearValue initialClear{};VkRenderPassBeginInfo passBegin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};passBegin.renderPass=pass;passBegin.framebuffer=framebuffers[index];passBegin.renderArea.extent={4,4};passBegin.clearValueCount=1;passBegin.pClearValues=&initialClear;
-  argent::sfs::FramePose pose;pose.serial=frame+1;argent::sfs::EyeUniforms uniforms{{argent::sfs::identity(),argent::sfs::identity()},{}};
+  argent::sfs::FramePose pose;pose.serial=frame+1;auto uniforms=argent::sfs::identityUniforms();
 #ifdef ARGENT_TEST_OPENXR
   XrPosef head{};auto deadline=GetTickCount64()+15000;while(!argent::beginStereoFrame(xrDevice,xrSource,pose,head,GetEnvironmentVariableW(L"ARGENT_TEST_MENU_QUAD",nullptr,0)!=0)){check(GetTickCount64()<deadline,"OpenXR did not become renderable");Sleep(10);}
   if(!calibratedValid){calibrated=head;calibratedValid=true;}
@@ -456,14 +458,15 @@ int main(int argc,char** argv){try{
   std::array<uint64_t,6> occlusionCpu{};
   ok(vkGetQueryPoolResults(device,occlusion,0,3,sizeof(occlusionCpu),occlusionCpu.data(),16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT|VK_QUERY_RESULT_WAIT_BIT));
   auto rawGet=reinterpret_cast<PFN_vkGetQueryPoolResults>(vkGetDeviceProcAddr(device,"vkGetQueryPoolResults"));
-  std::array<uint64_t,12> physicalQueries{};ok(rawGet(device,occlusion,0,6,sizeof(physicalQueries),physicalQueries.data(),16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT|VK_QUERY_RESULT_WAIT_BIT));
+  std::array<uint64_t,6*kharvox::sfs::kViews> physicalQueries{};ok(rawGet(device,occlusion,0,3*kharvox::sfs::kViews,sizeof(physicalQueries),physicalQueries.data(),16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT|VK_QUERY_RESULT_WAIT_BIT));
   for(unsigned q=0;q<3;++q){uint64_t value{},available{};std::memcpy(&value,bytes+208+q*24,8);std::memcpy(&available,bytes+216+q*24,8);
    check(value==occlusionCpu[q*2]&&available&&occlusionCpu[q*2+1],"64-bit GPU/CPU occlusion aggregation or padded stride incorrect");
-   check(value==physicalQueries[q*4]+physicalQueries[q*4+2],"Occlusion must sum both physical view results");
+   uint64_t physicalSum{};for(uint32_t v=0;v<kharvox::sfs::kViews;++v)physicalSum+=physicalQueries[(q*kharvox::sfs::kViews+v)*2];
+   check(value==physicalSum,"Occlusion must sum every physical view result");
    uint32_t narrow[2]{};std::memcpy(narrow,bytes+288+q*8,8);check(narrow[0]==value&&narrow[1],"32-bit GPU occlusion aggregation incorrect");
   }
 #ifndef ARGENT_TEST_OPENXR
-  check(occlusionCpu[0]==16,"Precise occlusion must count samples from both eyes");
+  check(occlusionCpu[0]==8*kharvox::sfs::kViews,"Precise occlusion must count samples from every view");
 #endif
   check(occlusionCpu[2]==0&&occlusionCpu[4]==0,"Empty mono or stereo occlusion query is not zero");
   uint32_t narrowEmpty[2]{};std::memcpy(narrowEmpty,bytes+328,8);check(narrowEmpty[0]==0&&narrowEmpty[1]==0,"Query range without availability incorrect");

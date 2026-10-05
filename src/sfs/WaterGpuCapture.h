@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <vector>
 #include <tuple>
+#include "ViewCount.h"
 #include <future>
 #include <chrono>
 #include <cstring>
@@ -237,7 +238,7 @@ public:
      auto bytes=texelBytes(inf.format,aspect);auto mip=vi.subresourceRange.baseMipLevel;
      if(!bytes||inf.imageType!=VK_IMAGE_TYPE_2D||inf.samples!=VK_SAMPLE_COUNT_1_BIT||!(inf.usage&VK_IMAGE_USAGE_TRANSFER_SRC_BIT)||mip>=inf.mipLevels||vi.subresourceRange.baseArrayLayer>=inf.arrayLayers){skip(sn,i.binding,"unsupported image format/range");continue;}
      if(b.image.imageLayout!=VK_IMAGE_LAYOUT_GENERAL&&b.image.imageLayout!=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL&&b.image.imageLayout!=VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL){skip(sn,i.binding,"unsupported image layout");continue;}
-     auto layers=vi.subresourceRange.layerCount==VK_REMAINING_ARRAY_LAYERS?inf.arrayLayers-vi.subresourceRange.baseArrayLayer:vi.subresourceRange.layerCount;if(layers>2||!layers||layers>inf.arrayLayers-vi.subresourceRange.baseArrayLayer){skip(sn,i.binding,"unsupported eye layer range");continue;}
+     auto layers=vi.subresourceRange.layerCount==VK_REMAINING_ARRAY_LAYERS?inf.arrayLayers-vi.subresourceRange.baseArrayLayer:vi.subresourceRange.layerCount;if(layers>kharvox::sfs::kViews||!layers||layers>inf.arrayLayers-vi.subresourceRange.baseArrayLayer){skip(sn,i.binding,"unsupported eye layer range");continue;}
      i.after=output;i.image=vi.image;i.view=b.image.imageView;i.layout=b.image.imageLayout;i.format=inf.format;i.extent={std::max(1u,inf.extent.width>>mip),std::max(1u,inf.extent.height>>mip),1};i.layers={aspect,mip,vi.subresourceRange.baseArrayLayer,layers};i.barrierAspect=combinedDepth(inf.format)?VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT:aspect;i.size=VkDeviceSize(i.extent.width)*i.extent.height*layers*bytes;
     }else continue;
     if(i.size>batchLimit||i.offset>batchLimit-i.size){skip(sn,i.binding,"snapshot budget");continue;}total=i.offset+i.size;t->items.push_back(i);

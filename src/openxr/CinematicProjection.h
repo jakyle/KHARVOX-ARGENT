@@ -22,8 +22,8 @@ inline bool cinematicQuadProjection(const sfs::Matrix& source,const sfs::FramePo
  const float cropX=float(crop.extent.width)/extent.width,cropY=float(crop.extent.height)/extent.height;
  const float convergence=size.width*source[0]*units/(2*cropX);
  if(!std::isfinite(convergence)||convergence<=0)return false;
- sfs::EyeUniforms result{{sfs::identity(),sfs::identity()},{}};
- for(int e=0;e<2;++e){
+ auto result=sfs::identityUniforms();
+ for(uint32_t e=0;e<sfs::kEyeViews;++e){
   sfs::Matrix eye;if(!sfs::poseMatrix(pose.views[e].pose,1,eye))return false;
   const auto p=local(pose.views[e].pose.position);
   if(!std::isfinite(p.x+p.y+p.z)||p.z<1.8f||p.z>3.2f||std::abs(p.x-head.x)>.12f||std::abs(p.y-head.y)>.12f||std::abs(p.z-head.z)>.12f)return false;

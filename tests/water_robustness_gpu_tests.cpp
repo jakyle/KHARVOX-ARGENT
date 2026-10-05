@@ -65,7 +65,7 @@ void main(){
  ivec2 p=ivec2(gl_GlobalInvocationID.xy);
  imageStore(outputTex,p,vec4(constants.data[0].x+texelFetch(stereoTex,p,0).x,constants.data[63].x,storageData.data[63].x,texelFetch(monoTex,ivec2(99),0).x));
 })",spv::ExecutionModelGLCompute);
- argent::sfs::ShaderOptions options;options.nativeSampleLayer=true;options.nativeStorageWriteLayer=true;const auto words=argent::sfs::compileStereoShader(original,options);
+ argent::sfs::ShaderOptions options;options.views=kharvox::sfs::kEyeViews;options.nativeSampleLayer=true;options.nativeStorageWriteLayer=true;const auto words=argent::sfs::compileStereoShader(original,options);
  VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};smci.codeSize=words.size()*4;smci.pCode=words.data();VkShaderModule module{};ok(vkCreateShaderModule(device,&smci,nullptr,&module));VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};plci.setLayoutCount=1;plci.pSetLayouts=&layout;VkPipelineLayout pipelineLayout{};ok(vkCreatePipelineLayout(device,&plci,nullptr,&pipelineLayout));VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};cpci.layout=pipelineLayout;cpci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};cpci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;cpci.stage.module=module;cpci.stage.pName="main";VkPipelineRobustnessCreateInfoEXT robustness{};
  check(!argent::sfs::protectWaterPipeline(1,true,cpci,robustness),"Unrelated shader protected");
  check(!argent::sfs::protectWaterPipeline(0x24abb0e76a065289ull,false,cpci,robustness),"Disabled feature used");

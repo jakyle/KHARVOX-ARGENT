@@ -27,6 +27,10 @@ public:
  static bool configuredEnabled(){
   char value[8]{};return GetEnvironmentVariableA("ARGENT_DESKTOP_MIRROR",value,sizeof(value))==1&&value[0]=='1';
  }
+ // Dev-only: mirror the raw game image's scope layer (kScopeView) instead of the final right eye.
+ static bool scopeDebugRequested(){
+  char value[8]{};return GetEnvironmentVariableA("ARGENT_SCOPE_DEBUG",value,sizeof(value))==1&&value[0]=='1';
+ }
  static uint32_t configuredFps(){
   char value[32]{};const auto n=GetEnvironmentVariableA("ARGENT_MIRROR_MAX_FPS",value,sizeof(value));
   if(!n||n>=sizeof(value))return 60;
@@ -35,13 +39,13 @@ public:
  }
  VkSwapchainKHR handle()const{return chain;}
  bool needsFrame()const{return chain&&(mirrorEye||!blankPresented);}
- bool create(Device& d,const VkSwapchainCreateInfoKHR& original,uint32_t maxFps=configuredFps(),bool showEye=configuredEnabled()){
+ bool create(Device& d,const VkSwapchainCreateInfoKHR& original,uint32_t maxFps=configuredFps(),bool showEye=configuredEnabled()||scopeDebugRequested(),bool rawSource=scopeDebugRequested()){
   mirrorEye=showEye;blankPresented=false;
   pacing.configure(maxFps);
   auto info=original;info.oldSwapchain=VK_NULL_HANDLE;info.imageArrayLayers=1;info.imageUsage=VK_IMAGE_USAGE_TRANSFER_DST_BIT;info.flags=0;info.pNext=nullptr;
   sourceExtent=original.imageExtent;
   // The finished XR eye contains sRGB pixels. Keep blit conversion symmetric.
-  if(showEye){
+  if(showEye&&!rawSource){
    const auto target=xrDisplayFormat(original.imageFormat,original.imageColorSpace==VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
    if(target!=info.imageFormat){
     auto formats=reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>(d.gipa(d.instance,"vkGetPhysicalDeviceSurfaceFormatsKHR"));
@@ -85,7 +89,7 @@ public:
   ready.resize(images.size());for(auto& sem:ready)check(d.proc<PFN_vkCreateSemaphore>("vkCreateSemaphore")(d.device,&si,nullptr,&sem));
   VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};check(d.proc<PFN_vkCreateFence>("vkCreateFence")(d.device,&fi,nullptr,&done));return true;
  }
- void present(Device& d,VkImage source,VkQueue sourceRetirementQueue,DesktopMirrorPacing::Clock::time_point now=DesktopMirrorPacing::Clock::now(),VkExtent2D finalExtent={},VkImageLayout sourceLayout=VK_IMAGE_LAYOUT_GENERAL,bool waitForSource=false){
+ void present(Device& d,VkImage source,VkQueue sourceRetirementQueue,DesktopMirrorPacing::Clock::time_point now=DesktopMirrorPacing::Clock::now(),VkExtent2D finalExtent={},VkImageLayout sourceLayout=VK_IMAGE_LAYOUT_GENERAL,bool waitForSource=false,uint32_t sourceLayer=0){
   if(!needsFrame()||!pacing.due(now))return;
   const auto readExtent=finalExtent.width&&finalExtent.height?finalExtent:sourceExtent;
   if(pending){
@@ -113,14 +117,14 @@ public:
    d.proc<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,nullptr,0,nullptr,1,&blank);
   }else{
   VkImageMemoryBarrier b[2]{};for(auto& v:b){v.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;v.srcQueueFamilyIndex=v.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;v.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};}
-  b[0].image=source;b[0].oldLayout=sourceLayout;b[0].newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b[0].srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;b[0].dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+  b[0].image=source;b[0].subresourceRange.baseArrayLayer=sourceLayer;b[0].oldLayout=sourceLayout;b[0].newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b[0].srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;b[0].dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
   b[1].image=images[index];b[1].oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;b[1].newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;b[1].dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
   d.proc<PFN_vkCmdPipelineBarrier>("vkCmdPipelineBarrier")(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,2,b);
   if(readExtent.width==extent.width&&readExtent.height==extent.height){
-   VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.extent={extent.width,extent.height,1};
+   VkImageCopy copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.srcSubresource.baseArrayLayer=sourceLayer;copy.extent={extent.width,extent.height,1};
    d.proc<PFN_vkCmdCopyImage>("vkCmdCopyImage")(command,source,b[0].newLayout,images[index],b[1].newLayout,1,&copy);
   }else{
-   VkImageBlit blit{};blit.srcSubresource=blit.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+   VkImageBlit blit{};blit.srcSubresource=blit.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};blit.srcSubresource.baseArrayLayer=sourceLayer;
    const auto fit=fitDesktopEye(readExtent,extent);
    if(fit.extent.width!=extent.width||fit.extent.height!=extent.height){
     VkClearColorValue black{};black.float32[3]=1;

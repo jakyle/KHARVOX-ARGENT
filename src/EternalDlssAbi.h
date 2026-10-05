@@ -33,7 +33,7 @@ struct EyeParameters {
 };
 // Own all substituted pointers for the synchronous native evaluation. Never
 // mutate the engine's descriptor structs or shared parameter backing storage.
-template<class Resolve>bool prepareEyes(const Parameters& input,std::array<EyeParameters,2>& eyes,Resolve&& resolve,bool reset){
+template<size_t Views,class Resolve>bool prepareEyes(const Parameters& input,std::array<EyeParameters,Views>& eyes,Resolve&& resolve,bool reset){
     std::array<const Resource*,resourceOffsets.size()> originals{};
     for(size_t i=0;i<resourceOffsets.size();++i){
         originals[i]=input.get<const Resource*>(resourceOffsets[i]);
